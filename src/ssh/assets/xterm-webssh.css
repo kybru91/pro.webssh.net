@@ -56,7 +56,3 @@ body {
 .xterm-decoration-overview-ruler {
     margin-right: 5px;
 }
-
-body.cp437 .xterm-dom-renderer-owner-1 .xterm-rows div {
-    margin-bottom: -1px;
-}
