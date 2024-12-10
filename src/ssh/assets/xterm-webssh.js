@@ -71,6 +71,7 @@ const HandlerHelper = {
         // Wikipedia : https://en.wikipedia.org/wiki/ANSI_escape_code
         // * Terminated by BEL or ST.
 
+        // TODO : Replace with -> https://github.com/xtermjs/xterm.js/tree/master/addons/addon-clipboard
         // OSC52 is a terminal escape sequence that allows copying text to the clipboard from the terminal. It is supported by many terminal emulators, including xterm, gnome-terminal, and iTerm2.
         terminal.parser.registerOscHandler(52, (data, params) => {
             // Documentation :
@@ -145,7 +146,10 @@ const ResizeHelper = {
         // Hack -> Don't use scrollbar width in order to use all columns on screen :
         terminal._core.viewport.scrollBarWidth = 0;
 
-        fitAddon.fit();
+        if (!terminalSettings.fixedSize) {
+            fitAddon.fit();
+        }
+
         JS2IOS.calliOSFunction('notifyTerminalSize', [terminal.cols, terminal.rows]);
     }
 };
@@ -197,6 +201,10 @@ const TerminalHelper = {
             let xtermScreenStyle = document.querySelector('div.xterm-screen').style;
             xtermScreenStyle.border = '1px solid rgba(127,127,127,0.2)';
             xtermScreenStyle.borderStyle = 'none solid solid none';
+
+            setTimeout(function () {
+                TerminalHelper.changeFontSize(TerminalHelper.retriveFontSize());
+            }, 500);
         }
 
         terminal.onData(function (data) {
@@ -209,6 +217,10 @@ const TerminalHelper = {
 
         // Notify that all components are now ready :
         JS2IOS.calliOSFunction('notifyTerminalReady');
+    },
+
+    setWebViewTitle: function (title) {
+        document.title = title;
     },
 
     saveState: debounce(() => {
@@ -224,12 +236,48 @@ const TerminalHelper = {
         terminal.write(decodeURIComponent(atob(encodedContent)));
     },
 
+    exportBuffer: function (exportType) {
+        let exportResult = '';
+        switch (exportType) {
+            case 'html':
+                let htmlOutput = serializeAddon.serializeAsHTML({
+                    includeGlobalBackground: true
+                });
+                let styles = `
+                    html, body, pre { 
+                        margin: 0; 
+                    } 
+                    pre>div { 
+                        padding:5px;
+                    } 
+                    * { 
+                        font-family: monospace !important
+                    }
+                `;
+                exportResult = htmlOutput.replace(
+                    '<html>',
+                    `<html><head><style>${styles}</style></head>`
+                );
+                break;
+            case 'txt':
+                exportResult = TerminalHelper.exportScrollback();
+                break;
+            default:
+                exportResult = exportResult = serializeAddon.serialize();
+        }
+        JS2IOS.calliOSFunction('exportBuffer', {
+            exportContent: Base64.utoa(exportResult),
+            exportType: exportType
+        });
+    },
+
     focus: function (enable) {
         const focusEvent = new CustomEvent(enable ? "focus" : "blur", {});
         terminal.textarea.dispatchEvent(focusEvent);
     },
 
     enableCursorBlink: function (enable) {
+        const renderType = TerminalHelper.getRenderType();
         if ('disabled' == terminalSettings.cursorBlink) {
             enable = false;
         }
@@ -239,8 +287,10 @@ const TerminalHelper = {
         // #974 : Upgrade xterm.js to 5.3.0 ->
         terminal._core._coreBrowserService.isFocused = enable
         terminal._core._coreBrowserService._cachedIsFocused = true;
-        document.querySelector('span.xterm-cursor').classList.add('xterm-cursor-blink');
-        document.querySelector('div.xterm-rows').classList.add('xterm-focus');
+        if ('DOM' === renderType) {
+            document.querySelector('span.xterm-cursor').classList.add('xterm-cursor-blink');
+            document.querySelector('div.xterm-rows').classList.add('xterm-focus');
+        }
         // <- #974 : Upgrade xterm.js to 5.3.0
 
         if (terminal.textarea) {
@@ -300,6 +350,37 @@ const TerminalHelper = {
         terminal.clearSelection();
 
         return textSelection;
+    },
+
+    getRenderType: function () {
+        const hasWebGLAddon = terminal._addonManager._addons.some(
+            addon => addon.instance && addon.instance._addonType === "WebglAddon"
+        );
+        return hasWebGLAddon ? "WEBGL" : "DOM";
+    },
+
+    exportRawScreenRows: function () {
+        const renderType = TerminalHelper.getRenderType();
+        if ('DOM' === renderType) {
+            return {
+                rows: Array.from(document.querySelectorAll('div.xterm-rows div')).map((element, index) => {
+                    return element.textContent.trim();
+                }),
+                lineHeight: parseInt(document.querySelector('div.xterm-rows div').style.lineHeight, 10)
+            };
+        } else {
+            const startRow = terminal._core._bufferService.buffer.ydisp;
+            const endRow = startRow + terminal.rows;
+            let rows = [];
+            for (let rowIndex = startRow; rowIndex < endRow; rowIndex++) {
+                let rawRow = terminal._core._bufferService.buffer.translateBufferLineToString(rowIndex).trim();
+                rows.push(rawRow);
+            }
+            return {
+                rows,
+                lineHeight: parseInt(document.querySelector('div.xterm-screen').style.height, 10) / rows.length
+            };
+        }
     },
 
     onBell: debounce(() => {
@@ -364,6 +445,10 @@ const TerminalHelper = {
         JS2IOS.calliOSFunction('logError', errorLog);
     },
 
+    retriveFontSize: function () {
+        return parseInt(terminal.options.fontSize, 10);
+    },
+
     changeFontSize: function (size) {
         terminal.options.fontSize = size;
 
@@ -392,7 +477,7 @@ const TerminalHelper = {
             theme: {},
             fontSize: 9,
             reverseWraparound: true,
-            isMacOS: true,
+            isMacOS: false,
             scrollback: 1000,
             fontFamily: '"Cascadia Code", Menlo, monospace',
             copyOnSelect: false,
@@ -473,6 +558,15 @@ const TerminalHelper = {
         if (theme.background) {
             document.querySelector('body').style.backgroundColor = theme.background;
         }
+
+        // TODO : Ability to update Font Family on a running terminal:
+        /*if (theme._fontFamilyName) {
+            TerminalHelper.loadFont(theme._fontFamilyName, () => {
+                terminal._publicOptions.fontFamily = theme._fontFamilyName;
+            });
+        } else {
+            terminal._publicOptions.fontFamily = '"MesloLGS NF"';
+        }*/
     },
 
     buildTheme: function (terminalSettings) {
@@ -493,7 +587,6 @@ const TerminalHelper = {
     buildTerminalSettings: function (terminalSettings) {
         return {
             fontFamily: terminalSettings.fontFamily,
-            rendererType: 'dom',
             allowTransparency: true,
             bellStyle: 'none',
             theme: TerminalHelper.buildTheme(terminalSettings),
@@ -509,7 +602,7 @@ const TerminalHelper = {
         };
     },
 
-    loadFont: function (fontFamily) {
+    loadFont: function (fontFamily, callback) {
         var fontStyle = document.createElement('style');
         fontStyle.appendChild(document.createTextNode("\
         @font-face {\
@@ -521,6 +614,16 @@ const TerminalHelper = {
         }\
         "));
         document.head.appendChild(fontStyle);
+
+        // Use the FontFaceSet API to check when the font is loaded :
+        document.fonts.load(`16px "${fontFamily}"`).then(() => {
+            console.log(`Font ${fontFamily} loaded successfully`);
+            if (callback) {
+                callback();
+            }
+        }).catch((error) => {
+            console.error(`Failed to load font ${fontFamily}:`, error);
+        });
     },
 
     onBufferChange: function (buffer) {
